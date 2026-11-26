@@ -7,22 +7,20 @@ on:
 
 jobs:
   build:
-    runs-on: macos-13
+    runs-on: macos-14
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Theos (macOS)
+      - name: Setup Theos
         uses: Randomblock1/theos-action@v1
-        with:
-          theos-scheme: rootless
 
       - name: Build package
         run: |
           make clean
           make package FINALPACKAGE=1 DEBUG=0
 
-      - name: Show produced packages
+      - name: Show packages
         run: ls -l packages || true
 
       - name: Upload deb
