@@ -1,0 +1,10 @@
+Package: com.dynamicislandpro.tweak
+Name: 灵动岛通知胶囊
+Description: 把 App 通知显示在灵动岛位置的胶囊里（iOS 16 / iPhone 14 Pro 系列，rootless 越狱）。
+Maintainer: local
+Author: local
+Section: Tweaks
+Depends: firmware (>= 15.0), ellekit
+Architecture: iphoneos-arm64
+Version: 1.0.0-15
+Installed-Size: 200
