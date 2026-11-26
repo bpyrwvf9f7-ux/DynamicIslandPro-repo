@@ -1,0 +1,33 @@
+name: Build deb
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-13
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Theos (macOS)
+        uses: Randomblock1/theos-action@v1
+        with:
+          theos-scheme: rootless
+
+      - name: Build package
+        run: |
+          make clean
+          make package FINALPACKAGE=1 DEBUG=0
+
+      - name: Show produced packages
+        run: ls -l packages || true
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: DynamicIslandPro-deb
+          path: packages/*.deb
+          if-no-files-found: error
