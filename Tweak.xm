@@ -10,6 +10,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <notify.h>
 #import <unistd.h>
+#import <dlfcn.h>
 #import <stdio.h>
 
 #define DIP_DOMAIN @"com.dynamicislandpro.tweak"
@@ -189,6 +190,63 @@ static void DIPWriteAppList(void) {
 
 #pragma mark - 窗口
 
+static NSString *gLastBundle = nil;
+static void DIPHideNow(void);
+
+static void DIPOpenApp(NSString *bundleID) {
+    if (!bundleID.length) return;
+    @try {
+        Class WS = objc_getClass("LSApplicationWorkspace");
+        if (!WS) {
+            void *h = dlopen("/System/Library/PrivateFrameworks/MobileCoreServices.framework/MobileCoreServices",
+                             RTLD_LAZY);
+            (void)h;
+            WS = objc_getClass("LSApplicationWorkspace");
+        }
+        if (!WS) { DIPLog(@"open app: no LSApplicationWorkspace"); return; }
+        id ws = ((id (*)(id, SEL))objc_msgSend)((id)WS, @selector(defaultWorkspace));
+        SEL selOpen = NSSelectorFromString(@"openApplicationWithBundleID:");
+        if ([ws respondsToSelector:selOpen]) {
+            ((BOOL (*)(id, SEL, id))objc_msgSend)(ws, selOpen, bundleID);
+            DIPLog(@"open app: %@", bundleID);
+        } else {
+            SEL selOpenURL = NSSelectorFromString(@"openSensitiveURL:withOptions:");
+            id url = [NSURL URLWithString:[@"prefs:root=" stringByAppendingString:bundleID]];
+            if ([ws respondsToSelector:selOpenURL]) {
+                ((BOOL (*)(id, SEL, id, id))objc_msgSend)(ws, selOpenURL, url, nil);
+                DIPLog(@"open url: %@", url);
+            }
+        }
+    } @catch (NSException *e) {
+        DIPLog(@"open app exception: %@", e.reason);
+    }
+}
+
+@interface DIPTapHandler : NSObject
+@end
+
+@implementation DIPTapHandler
+- (void)handleTap:(UITapGestureRecognizer *)g {
+    DIPLog(@"pill tapped: %@", gLastBundle ?: @"-");
+    DIPOpenApp(gLastBundle);
+    DIPHideNow();
+}
+@end
+
+static DIPTapHandler *gTapHandler = nil;
+
+@interface DIPWindow : UIWindow
+@end
+
+@implementation DIPWindow
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    if (!gVisible || !gPill) return nil;
+    CGRect f = [gPill convertRect:gPill.bounds toView:nil];
+    if (CGRectContainsPoint(f, point)) return [super hitTest:point withEvent:event];
+    return nil;
+}
+@end
+
 static UIWindowScene *DIPWindowScene(void) {
     UIApplication *app = [UIApplication sharedApplication];
     for (UIScene *s in app.connectedScenes) {
@@ -263,18 +321,24 @@ static void DIPBuildIfNeeded(void) {
     UIWindowScene *scene = DIPWindowScene();
     if (!scene) return;
 
-    gWindow = [[UIWindow alloc] initWithWindowScene:scene];
+    gWindow = [[DIPWindow alloc] initWithWindowScene:scene];
     gWindow.frame = scene.coordinateSpace.bounds;
     gWindow.windowLevel = UIWindowLevelAlert + 1.0;
     gWindow.backgroundColor = [UIColor clearColor];
-    gWindow.userInteractionEnabled = NO;
+    gWindow.userInteractionEnabled = YES;
     gWindow.hidden = NO;
 
     gPill = [[UIView alloc] initWithFrame:DIPCollapsedRect(gWindow.bounds.size.width)];
     gPill.layer.cornerRadius = DIPRadius();
     gPill.layer.masksToBounds = YES;
     gPill.alpha = 0.0;
+    gPill.userInteractionEnabled = YES;
     [gWindow addSubview:gPill];
+
+    gTapHandler = [[DIPTapHandler alloc] init];
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:gTapHandler
+                                                                          action:@selector(handleTap:)];
+    [gPill addGestureRecognizer:tap];
 
     gIcon = [[UIImageView alloc] initWithFrame:CGRectMake(11, 5, 26, 26)];
     gIcon.contentMode = UIViewContentModeScaleAspectFill;
@@ -379,6 +443,7 @@ static void DIPShow(NSString *title, NSString *body, NSString *bundleID, BOOL au
     UIImage *icon = bundleID.length ? DIPAppIcon(bundleID) : nil;
     gIcon.image = icon;
     gIcon.hidden = (icon == nil);
+    gLastBundle = bundleID;
 
     gTitle.text = title.length ? title : @"通知";
     gBody.text  = body.length ? body : @"";
@@ -440,6 +505,34 @@ static void DIPShow(NSString *title, NSString *body, NSString *bundleID, BOOL au
 }
 
 #pragma mark - 取值与过滤
+
+static void DIPHideNow(void) {
+    gToken++;
+    gVisible = NO;
+    [UIView animateWithDuration:0.25 animations:^{
+        gPill.alpha = 0.0;
+        gIcon.alpha = 0.0;
+        gTitle.alpha = 0.0;
+        gBody.alpha = 0.0;
+        gNow.alpha = 0.0;
+        gApp.alpha = 0.0;
+    }];
+}
+
+static void DIPEnsureDefaults(void) {
+    CFStringRef dom = (CFStringRef)DIP_DOMAIN;
+    if (!CFPreferencesCopyAppValue(CFSTR("filterMode"), dom)) {
+        CFPreferencesSetAppValue(CFSTR("filterMode"), (__bridge CFTypeRef)@(1), dom);
+    }
+    NSArray *ids = @[@"com.tencent.xin", @"com.tencent.mqq"];
+    for (NSString *bid in ids) {
+        NSString *key = [@"app_" stringByAppendingString:bid];
+        if (!CFPreferencesCopyAppValue((__bridge CFStringRef)key, dom)) {
+            CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFTypeRef)@(YES), dom);
+        }
+    }
+    CFPreferencesAppSynchronize(dom);
+}
 
 static NSString *DIPStr(id obj, NSString *key) {
     @try {
@@ -670,21 +763,20 @@ static BOOL DIPInstallHook(void) {
 
 %ctor {
     NSString *proc = [[NSProcessInfo processInfo] processName];
-    DIPLog(@"=== dylib loaded v20 (%@) pid=%d ===", proc, getpid());
+    DIPLog(@"=== dylib loaded v21 (%@) pid=%d ===", proc, getpid());
 
     if (![proc isEqualToString:@"SpringBoard"]) {
-        Class PSBase = objc_getClass("PSListController");
-        if (PSBase) {
-            Method m = class_getInstanceMethod(PSBase, NSSelectorFromString(@"specifiers"));
-            if (m) {
-                gOrigSpecifiers = method_getImplementation(m);
-                method_setImplementation(m, (IMP)DIPSpecifiersReplacement);
-                DIPLog(@"settings hook installed on PSListController");
-            } else {
-                DIPLog(@"PSListController has no specifiers");
-            }
-        } else {
-            DIPLog(@"PSListController not found");
+        NSArray *names = @[@"PrefsListController", @"PSListController"];
+        for (NSString *cn in names) {
+            Class c = objc_getClass(cn.UTF8String);
+            if (!c) { DIPLog(@"class %@ not found", cn); continue; }
+            Method m = class_getInstanceMethod(c, NSSelectorFromString(@"specifiers"));
+            if (!m) { DIPLog(@"%@ has no specifiers", cn); continue; }
+            IMP prev = method_getImplementation(m);
+            if (prev == (IMP)DIPSpecifiersReplacement) { DIPLog(@"%@ already hooked", cn); continue; }
+            if (!gOrigSpecifiers) gOrigSpecifiers = prev;
+            method_setImplementation(m, (IMP)DIPSpecifiersReplacement);
+            DIPLog(@"settings hook installed on %@", cn);
         }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{ DIPDumpClasses(); });
@@ -696,10 +788,13 @@ static BOOL DIPInstallHook(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{ DIPWriteAppList(); });
 
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ DIPEnsureDefaults(); });
+
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (DIPPrefBool(@"enabled", YES))
-            DIPShow(@"灵动岛通知胶囊", @"v20 已注入 SpringBoard ✅", @"com.tencent.xin", YES);
+            DIPShow(@"灵动岛通知胶囊", @"v21 已注入 SpringBoard ✅", @"com.tencent.xin", YES);
     });
 
     for (int i = 0; i < 5; i++) {
