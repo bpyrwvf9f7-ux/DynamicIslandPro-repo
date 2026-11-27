@@ -20,6 +20,8 @@ static UIView   *gPill   = nil;
 static UIImageView *gIcon = nil;
 static UILabel  *gTitle  = nil;
 static UILabel  *gBody   = nil;
+static UILabel  *gNow    = nil;
+static UILabel  *gApp    = nil;
 static BOOL      gVisible = NO;
 static NSInteger gToken   = 0;
 
@@ -223,19 +225,25 @@ static UIColor *DIPBackgroundColor(void) {
 
 static BOOL DIPLightPreset(void) { return (NSInteger)DIPPrefNum(@"stylePreset", 0) == 2; }
 
-static CGFloat DIPCWidth(void)  { return (CGFloat)DIPPrefNum(@"collapsedW", 126.0); }
-static CGFloat DIPCHeight(void) { return (CGFloat)DIPPrefNum(@"collapsedH", 37.0); }
-static CGFloat DIPRadius(void)  { return (CGFloat)DIPPrefNum(@"cornerRadius", 18.5); }
-static CGFloat DIPExpandH(void) { return (CGFloat)DIPPrefNum(@"expandedH", 88.0); }
+static CGFloat DIPCWidth(void)  { return (CGFloat)DIPPrefNum(@"collapsedW", 150.0); }
+static CGFloat DIPCHeight(void) { return (CGFloat)DIPPrefNum(@"collapsedH", 38.0); }
+static CGFloat DIPRadius(void)  { return (CGFloat)DIPPrefNum(@"cornerRadius", 19.0); }
+static CGFloat DIPExpandH(void) { return (CGFloat)DIPPrefNum(@"expandedH", 100.0); }
+static NSInteger DIPLayoutStyle(void) { return (NSInteger)DIPPrefNum(@"layoutStyle", 0.0); }
 
 static CGRect DIPCollapsedRect(CGFloat w) {
+    if (DIPLayoutStyle() == 2) {
+        return CGRectMake((w - 92.0) / 2.0, 13.0, 92.0, 32.0);
+    }
     CGFloat cw = DIPCWidth(), ch = DIPCHeight();
-    return CGRectMake((w - cw) / 2.0, 11.0, cw, ch);
+    return CGRectMake((w - cw) / 2.0, 10.0, cw, ch);
 }
 
 static CGRect DIPExpandedRect(CGFloat w) {
-    CGFloat ew = MIN(w - 28.0, 372.0);
-    return CGRectMake((w - ew) / 2.0, 11.0, ew, DIPExpandH());
+    NSInteger ls = DIPLayoutStyle();
+    if (ls == 2) return DIPCollapsedRect(w);
+    if (ls == 1) return CGRectMake(20.0, 8.0, w - 40.0, 44.0);
+    return CGRectMake(10.0, 1.0, w - 20.0, DIPExpandH());
 }
 
 static void DIPApplyStyle(void) {
@@ -244,6 +252,10 @@ static void DIPApplyStyle(void) {
     gTitle.textColor = DIPLightPreset() ? [UIColor blackColor] : [UIColor whiteColor];
     gBody.textColor  = DIPLightPreset() ? [UIColor colorWithWhite:0.18 alpha:1.0]
                                         : [UIColor colorWithWhite:0.84 alpha:1.0];
+    gNow.textColor = DIPLightPreset() ? [UIColor colorWithWhite:0.45 alpha:1.0]
+                                      : [UIColor colorWithWhite:0.55 alpha:1.0];
+    gApp.textColor = DIPLightPreset() ? [UIColor blackColor]
+                                      : [UIColor colorWithWhite:0.95 alpha:1.0];
 }
 
 static void DIPBuildIfNeeded(void) {
@@ -281,23 +293,74 @@ static void DIPBuildIfNeeded(void) {
     gBody.alpha = 0.0;
     [gPill addSubview:gBody];
 
+    gNow = [[UILabel alloc] initWithFrame:CGRectZero];
+    gNow.font = [UIFont systemFontOfSize:11.5];
+    gNow.alpha = 0.0;
+    [gPill addSubview:gNow];
+
+    gApp = [[UILabel alloc] initWithFrame:CGRectZero];
+    gApp.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightMedium];
+    gApp.textAlignment = NSTextAlignmentRight;
+    gApp.alpha = 0.0;
+    [gPill addSubview:gApp];
+
     DIPApplyStyle();
     DIPLog(@"window built frame=%@ level=%d", NSStringFromCGRect(gWindow.frame), (int)gWindow.windowLevel);
 }
 
 static void DIPLayoutContents(CGRect bounds) {
+    CGFloat w = bounds.size.width, h = bounds.size.height;
+    NSInteger ls = DIPLayoutStyle();
     BOOL hasIcon = (gIcon.image != nil);
-    CGFloat x = 11.0;
-    if (hasIcon) {
-        gIcon.frame = CGRectMake(11, (bounds.size.height - 26.0) / 2.0, 26, 26);
-        x = 11 + 26 + 9;
+
+    if (ls == 2) {            // 迷你：只显示图标
+        CGFloat s = MIN(26.0, h - 8.0);
+        gIcon.frame = CGRectMake((w - s) / 2.0, (h - s) / 2.0, s, s);
+        gIcon.layer.cornerRadius = s / 3.0;
+        gNow.hidden = YES; gApp.hidden = YES;
+        gTitle.hidden = YES; gBody.hidden = YES;
+        return;
     }
-    CGFloat textW = bounds.size.width - x - 13.0;
-    CGFloat titleH = 15.0, bodyH = 14.0, gap = 2.0;
-    CGFloat total = titleH + gap + bodyH;
-    CGFloat y0 = (bounds.size.height - total) / 2.0;
-    gTitle.frame = CGRectMake(x, y0, textW, titleH);
-    gBody.frame  = CGRectMake(x, y0 + titleH + gap, textW, bodyH);
+
+    gNow.hidden = NO; gApp.hidden = NO;
+    gTitle.hidden = NO;
+
+    BOOL big = (h > 60.0);
+    if (big) {                // 标准（展开态）
+        CGFloat is = 44.0;
+        gIcon.frame = CGRectMake(16.0, (h - is) / 2.0, is, is);
+        gIcon.layer.cornerRadius = 10.0;
+        CGFloat x = hasIcon ? (16.0 + is + 12.0) : 18.0;
+        CGFloat tw = w - x - 16.0;
+        gNow.frame = CGRectMake(x, 16.0, 80.0, 15.0);
+        gApp.frame = CGRectMake(w - 16.0 - 150.0, 15.0, 150.0, 16.0);
+        gTitle.frame = CGRectMake(x, 33.0, tw, 21.0);
+        gBody.frame  = CGRectMake(x, 58.0, tw, 18.0);
+        gTitle.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
+        gBody.font  = [UIFont systemFontOfSize:13.0];
+        gNow.font   = [UIFont systemFontOfSize:11.5];
+        gApp.font   = [UIFont systemFontOfSize:12.5 weight:UIFontWeightMedium];
+        return;
+    }
+
+    if (h > 42.0) {           // 紧凑：图标 + 单行标题
+        CGFloat is = 28.0;
+        gIcon.frame = CGRectMake(11.0, (h - is) / 2.0, is, is);
+        gIcon.layer.cornerRadius = 8.0;
+        CGFloat x = hasIcon ? (11.0 + is + 8.0) : 12.0;
+        gTitle.frame = CGRectMake(x, (h - 18.0) / 2.0, w - x - 12.0, 18.0);
+        gTitle.font = [UIFont systemFontOfSize:13.5 weight:UIFontWeightSemibold];
+        gNow.hidden = YES; gApp.hidden = YES; gBody.hidden = YES;
+        return;
+    }
+
+    CGFloat is = 26.0;        // 标准（收起态）
+    gIcon.frame = CGRectMake(11.0, (h - is) / 2.0, is, is);
+    gIcon.layer.cornerRadius = 7.0;
+    CGFloat x = hasIcon ? (11.0 + is + 9.0) : 12.0;
+    gTitle.frame = CGRectMake(x, (h - 15.0) / 2.0, w - x - 12.0, 15.0);
+    gTitle.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold];
+    gNow.hidden = YES; gApp.hidden = YES; gBody.hidden = YES;
 }
 
 static void DIPShow(NSString *title, NSString *body, NSString *bundleID, BOOL autoHide) {
@@ -320,6 +383,8 @@ static void DIPShow(NSString *title, NSString *body, NSString *bundleID, BOOL au
     gTitle.text = title.length ? title : @"通知";
     gBody.text  = body.length ? body : @"";
     gBody.hidden = (body.length == 0);
+    gNow.text = @"现在";
+    gApp.text = bundleID.length ? DIPAppDisplayName(bundleID) : @"通知";
 
     CGFloat w = gWindow.bounds.size.width;
     CGRect collapsed = DIPCollapsedRect(w);
@@ -335,10 +400,12 @@ static void DIPShow(NSString *title, NSString *body, NSString *bundleID, BOOL au
     void (^expand)(void) = ^{
         gPill.frame = expanded;
         DIPLayoutContents(expanded);
-        gPill.layer.cornerRadius = DIPRadius() + 9.0;
+        gPill.layer.cornerRadius = DIPRadius() + (DIPLayoutStyle() == 0 ? 17.0 : 0.0);
         gIcon.alpha = 1.0;
         gTitle.alpha = 1.0;
-        gBody.alpha = 1.0;
+        gBody.alpha = (gBody.hidden ? 0.0 : 1.0);
+        gNow.alpha = (gNow.hidden ? 0.0 : 1.0);
+        gApp.alpha = (gApp.hidden ? 0.0 : 1.0);
     };
 
     if (anim == 1) {
@@ -366,6 +433,8 @@ static void DIPShow(NSString *title, NSString *body, NSString *bundleID, BOOL au
             gIcon.alpha = 0.0;
             gTitle.alpha = 0.0;
             gBody.alpha = 0.0;
+            gNow.alpha = 0.0;
+            gApp.alpha = 0.0;
         } completion:^(BOOL finished) { gPill.alpha = 0.0; }];
     });
 }
@@ -464,12 +533,34 @@ static BOOL DIPArrayHasName(NSArray *arr, NSString *name) {
     return NO;
 }
 
+static int gSpecCalls = 0;
+
+static BOOL DIPIsFirstInNav(id self) {
+    @try {
+        id nav = [self valueForKey:@"navigationController"];
+        if (!nav) return NO;
+        NSArray *vcs = [nav valueForKey:@"viewControllers"];
+        return (vcs.count && [vcs objectAtIndex:0] == self);
+    } @catch (NSException *e) {}
+    return NO;
+}
+
 static id DIPSpecifiersReplacement(id self, SEL _cmd) {
     id arr = ((id (*)(id, SEL))gOrigSpecifiers)(self, _cmd);
     @try {
         NSString *cn = NSStringFromClass([self class]);
-        if ([cn rangeOfString:@"Root"].location == NSNotFound) return arr;
+        BOOL first = DIPIsFirstInNav(self);
+
+        if (gSpecCalls < 40) {
+            gSpecCalls++;
+            DIPLog(@"spec call %@ first=%@ count=%lu", cn, first ? @"Y" : @"N",
+                   (unsigned long)[arr count]);
+        }
+
         if (DIPArrayHasName(arr, @"灵动岛通知胶囊")) return arr;
+
+        BOOL nameHit = ([cn rangeOfString:@"Root"].location != NSNotFound);
+        if (!first && !nameHit) return arr;
 
         id link = DIPMakeSpecifier(@"灵动岛通知胶囊", 13);
         if (!link) { DIPLog(@"inject: cannot build specifier"); return arr; }
@@ -488,6 +579,33 @@ static id DIPSpecifiersReplacement(id self, SEL _cmd) {
     return arr;
 }
 
+static void DIPProbeRoot(void) {
+    @try {
+        UIWindow *key = nil;
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if (w.isKeyWindow) { key = w; break; }
+        }
+        if (!key) { DIPLog(@"probe: no key window"); return; }
+        id root = [key rootViewController];
+        DIPLog(@"probe: rootVC=%@", NSStringFromClass([root class]));
+        // 找到导航栈里第一个控制器
+        id nav = nil;
+        if ([root isKindOfClass:[UINavigationController class]]) nav = root;
+        if (!nav) {
+            @try { nav = [root valueForKey:@"navigationController"]; } @catch (NSException *e) {}
+        }
+        NSArray *vcs = [nav valueForKey:@"viewControllers"];
+        id first = vcs.count ? [vcs objectAtIndex:0] : nil;
+        DIPLog(@"probe: first=%@", NSStringFromClass([first class]));
+        if (first && [first respondsToSelector:NSSelectorFromString(@"reloadSpecifiers")]) {
+            ((void (*)(id, SEL))objc_msgSend)(first, NSSelectorFromString(@"reloadSpecifiers"));
+            DIPLog(@"probe: reloadSpecifiers sent");
+        }
+    } @catch (NSException *e) {
+        DIPLog(@"probe exception: %@", [e reason]);
+    }
+}
+
 static void DIPDumpClasses(void) {
     int total = objc_getClassList(NULL, 0);
     if (total <= 0) return;
@@ -496,10 +614,10 @@ static void DIPDumpClasses(void) {
     total = objc_getClassList(list, total);
     NSMutableString *buf = [NSMutableString string];
     int n = 0;
-    for (int i = 0; i < total && n < 60; i++) {
+    for (int i = 0; i < total && n < 80; i++) {
         NSString *cn = NSStringFromClass(list[i]);
-        if ([cn rangeOfString:@"Root"].location != NSNotFound ||
-            [cn rangeOfString:@"ListController"].location != NSNotFound) {
+        if ([cn hasPrefix:@"PS"] ||
+            [cn rangeOfString:@"RootList"].location != NSNotFound) {
             [buf appendFormat:@"%@ ", cn];
             n++;
         }
@@ -552,7 +670,7 @@ static BOOL DIPInstallHook(void) {
 
 %ctor {
     NSString *proc = [[NSProcessInfo processInfo] processName];
-    DIPLog(@"=== dylib loaded v19 (%@) pid=%d ===", proc, getpid());
+    DIPLog(@"=== dylib loaded v20 (%@) pid=%d ===", proc, getpid());
 
     if (![proc isEqualToString:@"SpringBoard"]) {
         Class PSBase = objc_getClass("PSListController");
@@ -570,6 +688,8 @@ static BOOL DIPInstallHook(void) {
         }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{ DIPDumpClasses(); });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ DIPProbeRoot(); });
         return;
     }
 
@@ -579,7 +699,7 @@ static BOOL DIPInstallHook(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (DIPPrefBool(@"enabled", YES))
-            DIPShow(@"灵动岛通知胶囊", @"v19 已注入 SpringBoard ✅", @"com.tencent.xin", YES);
+            DIPShow(@"灵动岛通知胶囊", @"v20 已注入 SpringBoard ✅", @"com.tencent.xin", YES);
     });
 
     for (int i = 0; i < 5; i++) {
