@@ -440,6 +440,74 @@ static void DIPHideNativeBanner(id destination, id bannerVC, id request) {
     }
 }
 
+#pragma mark - 设置页入口注入（不依赖 PreferenceLoader）
+
+static IMP gOrigSpecifiers = NULL;
+
+static id DIPMakeSpecifier(NSString *name, NSInteger cell) {
+    Class PS = objc_getClass("PSSpecifier");
+    if (!PS) return nil;
+    SEL sel = NSSelectorFromString(@"preferenceSpecifierNamed:target:set:get:detail:cell:edit:");
+    if (![PS respondsToSelector:sel]) return nil;
+    id (*fn)(id, SEL, id, id, id, id, id, NSInteger, id) =
+        (id (*)(id, SEL, id, id, id, id, id, NSInteger, id))objc_msgSend;
+    return fn((id)PS, sel, name, nil, nil, nil, nil, cell, nil);
+}
+
+static BOOL DIPArrayHasName(NSArray *arr, NSString *name) {
+    for (id s in arr) {
+        @try {
+            id n = [s valueForKey:@"name"];
+            if ([n isKindOfClass:[NSString class]] && [(NSString *)n isEqualToString:name]) return YES;
+        } @catch (NSException *e) {}
+    }
+    return NO;
+}
+
+static id DIPSpecifiersReplacement(id self, SEL _cmd) {
+    id arr = ((id (*)(id, SEL))gOrigSpecifiers)(self, _cmd);
+    @try {
+        NSString *cn = NSStringFromClass([self class]);
+        if ([cn rangeOfString:@"Root"].location == NSNotFound) return arr;
+        if (DIPArrayHasName(arr, @"灵动岛通知胶囊")) return arr;
+
+        id link = DIPMakeSpecifier(@"灵动岛通知胶囊", 13);
+        if (!link) { DIPLog(@"inject: cannot build specifier"); return arr; }
+        [link setProperty:@"DynamicIslandProPrefs" forKey:@"bundle"];
+
+        id group = DIPMakeSpecifier(@"", 0);
+        NSMutableArray *m = [arr isKindOfClass:[NSMutableArray class]] ? (NSMutableArray *)arr : [arr mutableCopy];
+        if (!m) m = [NSMutableArray array];
+        if (group) [m addObject:group];
+        [m addObject:link];
+        DIPLog(@"INJECTED entry into %@ rows=%lu", cn, (unsigned long)[m count]);
+        return m;
+    } @catch (NSException *e) {
+        DIPLog(@"inject exception: %@", [e reason]);
+    }
+    return arr;
+}
+
+static void DIPDumpClasses(void) {
+    int total = objc_getClassList(NULL, 0);
+    if (total <= 0) return;
+    Class *list = (Class *)malloc(sizeof(Class) * (size_t)total);
+    if (!list) return;
+    total = objc_getClassList(list, total);
+    NSMutableString *buf = [NSMutableString string];
+    int n = 0;
+    for (int i = 0; i < total && n < 60; i++) {
+        NSString *cn = NSStringFromClass(list[i]);
+        if ([cn rangeOfString:@"Root"].location != NSNotFound ||
+            [cn rangeOfString:@"ListController"].location != NSNotFound) {
+            [buf appendFormat:@"%@ ", cn];
+            n++;
+        }
+    }
+    free(list);
+    DIPLog(@"candidate classes: %@", buf);
+}
+
 #pragma mark - 钩子
 
 static IMP  gOrigPresent = NULL;
@@ -483,7 +551,27 @@ static BOOL DIPInstallHook(void) {
 #pragma mark - 装载
 
 %ctor {
-    DIPLog(@"=== dylib loaded v18 pid=%d ===", getpid());
+    NSString *proc = [[NSProcessInfo processInfo] processName];
+    DIPLog(@"=== dylib loaded v19 (%@) pid=%d ===", proc, getpid());
+
+    if (![proc isEqualToString:@"SpringBoard"]) {
+        Class PSBase = objc_getClass("PSListController");
+        if (PSBase) {
+            Method m = class_getInstanceMethod(PSBase, NSSelectorFromString(@"specifiers"));
+            if (m) {
+                gOrigSpecifiers = method_getImplementation(m);
+                method_setImplementation(m, (IMP)DIPSpecifiersReplacement);
+                DIPLog(@"settings hook installed on PSListController");
+            } else {
+                DIPLog(@"PSListController has no specifiers");
+            }
+        } else {
+            DIPLog(@"PSListController not found");
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ DIPDumpClasses(); });
+        return;
+    }
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{ DIPWriteAppList(); });
@@ -491,7 +579,7 @@ static BOOL DIPInstallHook(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (DIPPrefBool(@"enabled", YES))
-            DIPShow(@"灵动岛通知胶囊", @"v18 已注入 SpringBoard ✅", @"com.tencent.xin", YES);
+            DIPShow(@"灵动岛通知胶囊", @"v19 已注入 SpringBoard ✅", @"com.tencent.xin", YES);
     });
 
     for (int i = 0; i < 5; i++) {
