@@ -6,6 +6,7 @@
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <QuartzCore/QuartzCore.h>
 #import <notify.h>
 #import <unistd.h>
@@ -431,7 +432,10 @@ static void DIPHideNativeBanner(id destination, id bannerVC, id request) {
     if ([destination respondsToSelector:dismiss]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            @try { [destination performSelector:dismiss withObject:request]; } @catch (NSException *e) {}
+            @try {
+                void (*fn)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
+                fn(destination, dismiss, request);
+            } @catch (NSException *e) {}
         });
     }
 }
