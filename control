@@ -6,4 +6,4 @@ Author: local
 Section: Tweaks
 Depends: firmware (>= 15.0), ellekit, preferenceloader
 Architecture: iphoneos-arm64
-Version: 1.0.0-21
+Version: 1.0.0-22

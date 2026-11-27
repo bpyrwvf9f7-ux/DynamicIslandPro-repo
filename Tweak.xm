@@ -604,8 +604,6 @@ static void DIPHideNativeBanner(id destination, id bannerVC, id request) {
 
 #pragma mark - 设置页入口注入（不依赖 PreferenceLoader）
 
-static IMP gOrigSpecifiers = NULL;
-
 static id DIPMakeSpecifier(NSString *name, NSInteger cell) {
     Class PS = objc_getClass("PSSpecifier");
     if (!PS) return nil;
@@ -627,33 +625,17 @@ static BOOL DIPArrayHasName(NSArray *arr, NSString *name) {
 }
 
 static int gSpecCalls = 0;
+static NSMutableSet *gHookedNames = nil;
 
-static BOOL DIPIsFirstInNav(id self) {
+static id DIPInjectIfNeeded(id self, id arr, NSString *hookedClass) {
     @try {
-        id nav = [self valueForKey:@"navigationController"];
-        if (!nav) return NO;
-        NSArray *vcs = [nav valueForKey:@"viewControllers"];
-        return (vcs.count && [vcs objectAtIndex:0] == self);
-    } @catch (NSException *e) {}
-    return NO;
-}
-
-static id DIPSpecifiersReplacement(id self, SEL _cmd) {
-    id arr = ((id (*)(id, SEL))gOrigSpecifiers)(self, _cmd);
-    @try {
-        NSString *cn = NSStringFromClass([self class]);
-        BOOL first = DIPIsFirstInNav(self);
-
-        if (gSpecCalls < 40) {
+        if (gSpecCalls < 30) {
             gSpecCalls++;
-            DIPLog(@"spec call %@ first=%@ count=%lu", cn, first ? @"Y" : @"N",
-                   (unsigned long)[arr count]);
+            DIPLog(@"spec call %@ via %@ count=%lu",
+                   NSStringFromClass([self class]), hookedClass, (unsigned long)[arr count]);
         }
-
+        if (![arr isKindOfClass:[NSArray class]]) return arr;
         if (DIPArrayHasName(arr, @"灵动岛通知胶囊")) return arr;
-
-        BOOL nameHit = ([cn rangeOfString:@"Root"].location != NSNotFound);
-        if (!first && !nameHit) return arr;
 
         id link = DIPMakeSpecifier(@"灵动岛通知胶囊", 13);
         if (!link) { DIPLog(@"inject: cannot build specifier"); return arr; }
@@ -664,12 +646,70 @@ static id DIPSpecifiersReplacement(id self, SEL _cmd) {
         if (!m) m = [NSMutableArray array];
         if (group) [m addObject:group];
         [m addObject:link];
-        DIPLog(@"INJECTED entry into %@ rows=%lu", cn, (unsigned long)[m count]);
+        DIPLog(@"INJECTED entry into %@ (via %@) rows=%lu",
+               NSStringFromClass([self class]), hookedClass, (unsigned long)[m count]);
         return m;
     } @catch (NSException *e) {
         DIPLog(@"inject exception: %@", [e reason]);
     }
     return arr;
+}
+
+static BOOL DIPClassImplements(Class c, SEL sel) {
+    unsigned int n = 0;
+    Method *list = class_copyMethodList(c, &n);
+    BOOL found = NO;
+    for (unsigned int i = 0; i < n; i++) {
+        if (method_getName(list[i]) == sel) { found = YES; break; }
+    }
+    free(list);
+    return found;
+}
+
+static void DIPHookSpecifiers(Class c) {
+    if (!c) return;
+    NSString *cn = NSStringFromClass(c);
+    if (!gHookedNames) gHookedNames = [NSMutableSet set];
+    if ([gHookedNames containsObject:cn]) return;
+
+    SEL sel = NSSelectorFromString(@"specifiers");
+    if (!DIPClassImplements(c, sel)) {
+        DIPLog(@"%@ 继承 specifiers，跳过", cn);
+        return;
+    }
+    Method m = class_getInstanceMethod(c, sel);
+    if (!m) { DIPLog(@"%@ 无 specifiers", cn); return; }
+
+    IMP orig = method_getImplementation(m);
+    IMP rep = imp_implementationWithBlock(^(id self) {
+        id arr = ((id (*)(id, SEL))orig)(self, sel);
+        return DIPInjectIfNeeded(self, arr, cn);
+    });
+    method_setImplementation(m, rep);
+    [gHookedNames addObject:cn];
+    DIPLog(@"hooked %@ specifiers", cn);
+}
+
+static void DIPInstallSettingsHooks(void) {
+    NSArray *exact = @[@"PrefsListController", @"PSListController"];
+    for (NSString *cn in exact) {
+        Class c = objc_getClass(cn.UTF8String);
+        if (!c) { DIPLog(@"waiting for class %@", cn); continue; }
+        DIPHookSpecifiers(c);
+    }
+    // 顺带尝试所有名字里带 ListController 的类（只在 Root 语境里注入）
+    int total = objc_getClassList(NULL, 0);
+    if (total <= 0) return;
+    Class *list = (Class *)malloc(sizeof(Class) * (size_t)total);
+    if (!list) return;
+    total = objc_getClassList(list, total);
+    for (int i = 0; i < total; i++) {
+        NSString *cn = NSStringFromClass(list[i]);
+        if ([cn hasSuffix:@"RootListController"] || [cn isEqualToString:@"PrefsListController"]) {
+            DIPHookSpecifiers(list[i]);
+        }
+    }
+    free(list);
 }
 
 static void DIPProbeRoot(void) {
@@ -681,18 +721,20 @@ static void DIPProbeRoot(void) {
         if (!key) { DIPLog(@"probe: no key window"); return; }
         id root = [key rootViewController];
         DIPLog(@"probe: rootVC=%@", NSStringFromClass([root class]));
-        // 找到导航栈里第一个控制器
-        id nav = nil;
-        if ([root isKindOfClass:[UINavigationController class]]) nav = root;
-        if (!nav) {
-            @try { nav = [root valueForKey:@"navigationController"]; } @catch (NSException *e) {}
-        }
-        NSArray *vcs = [nav valueForKey:@"viewControllers"];
-        id first = vcs.count ? [vcs objectAtIndex:0] : nil;
-        DIPLog(@"probe: first=%@", NSStringFromClass([first class]));
-        if (first && [first respondsToSelector:NSSelectorFromString(@"reloadSpecifiers")]) {
-            ((void (*)(id, SEL))objc_msgSend)(first, NSSelectorFromString(@"reloadSpecifiers"));
-            DIPLog(@"probe: reloadSpecifiers sent");
+        NSMutableArray *stack = [NSMutableArray arrayWithObject:root];
+        int depth = 0;
+        while (stack.count && depth < 24) {
+            id vc = [stack objectAtIndex:0];
+            [stack removeObjectAtIndex:0];
+            depth++;
+            NSString *cn = NSStringFromClass([vc class]);
+            if ([cn hasPrefix:@"PS"] || [cn hasSuffix:@"ListController"]) {
+                DIPLog(@"probe vc: %@", cn);
+            }
+            id kids = nil;
+            @try { kids = [vc valueForKey:@"viewControllers"]; } @catch (NSException *e) {}
+            if (!kids) { @try { kids = [vc valueForKey:@"childViewControllers"]; } @catch (NSException *e) {} }
+            for (id k in kids) [stack addObject:k];
         }
     } @catch (NSException *e) {
         DIPLog(@"probe exception: %@", [e reason]);
@@ -763,25 +805,18 @@ static BOOL DIPInstallHook(void) {
 
 %ctor {
     NSString *proc = [[NSProcessInfo processInfo] processName];
-    DIPLog(@"=== dylib loaded v21 (%@) pid=%d ===", proc, getpid());
+    DIPLog(@"=== dylib loaded v22 (%@) pid=%d ===", proc, getpid());
 
     if (![proc isEqualToString:@"SpringBoard"]) {
-        NSArray *names = @[@"PrefsListController", @"PSListController"];
-        for (NSString *cn in names) {
-            Class c = objc_getClass(cn.UTF8String);
-            if (!c) { DIPLog(@"class %@ not found", cn); continue; }
-            Method m = class_getInstanceMethod(c, NSSelectorFromString(@"specifiers"));
-            if (!m) { DIPLog(@"%@ has no specifiers", cn); continue; }
-            IMP prev = method_getImplementation(m);
-            if (prev == (IMP)DIPSpecifiersReplacement) { DIPLog(@"%@ already hooked", cn); continue; }
-            if (!gOrigSpecifiers) gOrigSpecifiers = prev;
-            method_setImplementation(m, (IMP)DIPSpecifiersReplacement);
-            DIPLog(@"settings hook installed on %@", cn);
+        DIPInstallSettingsHooks();
+        for (int i = 1; i <= 6; i++) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 1.5 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                DIPInstallSettingsHooks();
+                if (i == 3) DIPDumpClasses();
+                if (i == 4) DIPProbeRoot();
+            });
         }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{ DIPDumpClasses(); });
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{ DIPProbeRoot(); });
         return;
     }
 
@@ -794,7 +829,7 @@ static BOOL DIPInstallHook(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (DIPPrefBool(@"enabled", YES))
-            DIPShow(@"灵动岛通知胶囊", @"v21 已注入 SpringBoard ✅", @"com.tencent.xin", YES);
+            DIPShow(@"灵动岛通知胶囊", @"v22 已注入 SpringBoard ✅", @"com.tencent.xin", YES);
     });
 
     for (int i = 0; i < 5; i++) {
