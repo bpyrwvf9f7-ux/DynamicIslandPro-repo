@@ -1,6 +1,7 @@
 // DynamicIslandPro —— 灵动岛通知胶囊（iOS 16 / iPhone 14 Pro）
-// v16：日志改为追加写；自动扫描类名含 Banner 的类、找 presentNotification* 方法挂钩；
-//      窗口场景多级兜底（connectedScenes → 现有 window → SBWindowSceneManager）。
+// v17：按实测签名挂钩 SBNotificationBannerDestination
+//      -_presentNotificationViewController:modal:forRequest:completion:
+//      并从 NCNotificationRequest.content 里取标题/正文。
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -20,7 +21,7 @@ static UILabel  *gBody   = nil;
 static BOOL      gVisible = NO;
 static NSInteger gToken   = 0;
 
-#pragma mark - 日志（追加写，不覆盖）
+#pragma mark - 日志（追加写）
 
 static NSString *gLogPath = nil;
 
@@ -45,51 +46,30 @@ static void DIPLog(NSString *format, ...) {
     fclose(f);
 }
 
-#pragma mark - 窗口场景（多级兜底）
+#pragma mark - 窗口场景
 
 static UIWindowScene *DIPWindowScene(void) {
     UIApplication *app = [UIApplication sharedApplication];
 
-    NSInteger sceneCount = 0;
     for (UIScene *s in app.connectedScenes) {
         if (![s isKindOfClass:[UIWindowScene class]]) continue;
-        sceneCount++;
         UIWindowScene *ws = (UIWindowScene *)s;
-        if (ws.activationState == UISceneActivationStateForegroundActive) {
-            DIPLog(@"scene found(active) total=%d", (int)sceneCount);
-            return ws;
-        }
+        if (ws.activationState == UISceneActivationStateForegroundActive) return ws;
     }
     for (UIScene *s in app.connectedScenes) {
-        if ([s isKindOfClass:[UIWindowScene class]]) {
-            DIPLog(@"scene found(inactive)");
-            return (UIWindowScene *)s;
-        }
+        if ([s isKindOfClass:[UIWindowScene class]]) return (UIWindowScene *)s;
     }
-
-    NSArray *wins = app.windows;
-    DIPLog(@"no scene in connectedScenes(count=%d), windows=%d", (int)sceneCount, (int)wins.count);
-    for (UIWindow *w in wins) {
-        if (w.windowScene) {
-            DIPLog(@"scene taken from existing window");
-            return w.windowScene;
-        }
+    for (UIWindow *w in app.windows) {
+        if (w.windowScene) return w.windowScene;
     }
-
     Class mgr = objc_getClass("SBWindowSceneManager");
     if (mgr) {
         @try {
             id shared = [(id)mgr performSelector:@selector(sharedInstance)];
             id active = [shared performSelector:@selector(activeDisplayWindowScene)];
-            if ([active isKindOfClass:[UIWindowScene class]]) {
-                DIPLog(@"scene taken from SBWindowSceneManager");
-                return (UIWindowScene *)active;
-            }
-        } @catch (NSException *e) {
-            DIPLog(@"SBWindowSceneManager threw: %@", e.reason);
-        }
+            if ([active isKindOfClass:[UIWindowScene class]]) return (UIWindowScene *)active;
+        } @catch (NSException *e) {}
     }
-    DIPLog(@"no window scene at all");
     return nil;
 }
 
@@ -146,10 +126,7 @@ static void DIPShow(NSString *title, NSString *body, BOOL autoHide) {
     }
 
     DIPBuildIfNeeded();
-    if (!gWindow) {
-        DIPLog(@"show aborted: no window");
-        return;
-    }
+    if (!gWindow) { DIPLog(@"show aborted: no window"); return; }
 
     gToken++;
     NSInteger token = gToken;
@@ -192,100 +169,99 @@ static void DIPShow(NSString *title, NSString *body, BOOL autoHide) {
             gPill.layer.cornerRadius = kCollapsedRadius;
             gTitle.alpha = 0.0;
             gBody.alpha = 0.0;
-        } completion:^(BOOL finished) {
-            gPill.alpha = 0.0;
-        }];
+        } completion:^(BOOL finished) { gPill.alpha = 0.0; }];
     });
 }
 
-#pragma mark - KVC 兜底取字段
+#pragma mark - 从 NCNotificationRequest 取字段
 
-static NSString *DIPSafeString(id obj, NSArray<NSString *> *keys) {
-    for (NSString *k in keys) {
-        @try {
-            id v = [obj valueForKey:k];
-            if ([v isKindOfClass:[NSString class]] && [(NSString *)v length]) return (NSString *)v;
-        } @catch (NSException *e) {}
-    }
+static NSString *DIPStr(id obj, NSString *key) {
+    @try {
+        id v = [obj valueForKey:key];
+        if ([v isKindOfClass:[NSString class]] && [(NSString *)v length]) return (NSString *)v;
+    } @catch (NSException *e) {}
     return nil;
 }
 
-#pragma mark - 自动扫钩子
+static void DIPExtractAndShow(id request) {
+    NSString *title = nil, *body = nil, *bundle = nil;
+
+    if (request) {
+        id content = nil, header = nil;
+        @try { content = [request valueForKey:@"content"]; } @catch (NSException *e) {}
+        if (content) {
+            title = DIPStr(content, @"title");
+            body  = DIPStr(content, @"message");
+            if (!body.length) body = DIPStr(content, @"subtitle");
+        }
+        @try { header = [request valueForKey:@"header"]; } @catch (NSException *e) {}
+        if (!title.length && header) title = DIPStr(header, @"title");
+
+        bundle = DIPStr(request, @"sectionIdentifier");
+        if (!bundle.length) bundle = DIPStr(request, @"bundleIdentifier");
+        if (!title.length) title = DIPStr(request, @"title");
+        if (!body.length) body = DIPStr(request, @"message");
+    }
+
+    if (title.length || body.length) {
+        DIPShow(title, body, YES);
+    } else {
+        DIPShow(bundle.length ? bundle : @"新通知", @"", YES);
+    }
+}
+
+#pragma mark - 钩子
 
 static IMP  gOrigPresent   = NULL;
 static BOOL gHookInstalled = NO;
 
-static void DIPPresentReplacement(id self, SEL _cmd, id first, id second) {
+// - (void)_presentNotificationViewController:(id)vc modal:(BOOL)modal
+//        forRequest:(id)request completion:(id)completion
+static void DIPPresentReplacement(id self, SEL _cmd, id vc, BOOL modal, id request, id completion) {
     @try {
-        NSString *title = DIPSafeString(first, @[@"title", @"notificationTitle", @"header"]);
-        NSString *body  = DIPSafeString(first, @[@"message", @"body", @"subtitle"]);
-        if (!title.length) title = DIPSafeString(first, @[@"sectionIdentifier", @"bundleIdentifier"]);
-        DIPShow(title, body, YES);
+        DIPLog(@"HOOK fired, request class=%s",
+               request ? class_getName(object_getClass(request)) : "nil");
+        DIPExtractAndShow(request);
     } @catch (NSException *e) {
-        DIPLog(@"show exception: %@", e.reason);
+        DIPLog(@"hook body exception: %@", e.reason);
     }
-    if (gOrigPresent) ((void (*)(id, SEL, id, id))gOrigPresent)(self, _cmd, first, second);
+    if (gOrigPresent) {
+        ((void (*)(id, SEL, id, BOOL, id, id))gOrigPresent)(self, _cmd, vc, modal, request, completion);
+    }
 }
 
-// 遍历所有类名含 "Banner" 的类，找名字含 "presentNotification" 且只有 3 个参数的方法挂钩
-static BOOL DIPScanAndHook(void) {
+static BOOL DIPInstallHook(void) {
     if (gHookInstalled) return YES;
 
-    int count = objc_getClassList(NULL, 0);
-    if (count <= 0) return NO;
-    Class *classes = (Class *)malloc(sizeof(Class) * count);
-    count = objc_getClassList(classes, count);
+    Class cls = objc_getClass("SBNotificationBannerDestination");
+    if (!cls) { DIPLog(@"SBNotificationBannerDestination missing"); return NO; }
 
-    int bannerClasses = 0;
-    for (int i = 0; i < count; i++) {
-        Class cls = classes[i];
-        const char *name = class_getName(cls);
-        if (!name || !strstr(name, "Banner")) continue;
-        bannerClasses++;
+    SEL sel = NSSelectorFromString(@"_presentNotificationViewController:modal:forRequest:completion:");
+    Method m = class_getInstanceMethod(cls, sel);
+    if (!m) { DIPLog(@"target selector missing"); return NO; }
 
-        unsigned int mcount = 0;
-        Method *methods = class_copyMethodList(cls, &mcount);
-        for (unsigned int j = 0; j < mcount; j++) {
-            const char *selName = sel_getName(method_getName(methods[j]));
-            if (!selName || !strstr(selName, "presentNotification")) continue;
-
-            int argc = (int)method_getNumberOfArguments(methods[j]);
-            DIPLog(@"candidate %s -%s argc=%d", name, selName, argc);
-
-            if (argc == 3) {
-                gOrigPresent = method_getImplementation(methods[j]);
-                method_setImplementation(methods[j], (IMP)DIPPresentReplacement);
-                gHookInstalled = YES;
-                DIPLog(@"HOOKED %s -%s", name, selName);
-                if (methods) free(methods);
-                free(classes);
-                return YES;
-            }
-        }
-        if (methods) free(methods);
-    }
-
-    DIPLog(@"scan done: bannerClasses=%d totalClasses=%d, no hook", bannerClasses, count);
-    free(classes);
-    return NO;
+    DIPLog(@"installing hook, argc=%d", (int)method_getNumberOfArguments(m));
+    gOrigPresent = method_getImplementation(m);
+    method_setImplementation(m, (IMP)DIPPresentReplacement);                        
+    gHookInstalled = YES;
+    DIPLog(@"HOOKED -_presentNotificationViewController:modal:forRequest:completion:");
+    return YES;
 }
 
 #pragma mark - 装载
 
 %ctor {
-    DIPLog(@"=== dylib loaded v16 pid=%d ===", getpid());
+    DIPLog(@"=== dylib loaded v17 pid=%d ===", getpid());
 
-    // 自检：6 秒后弹测试胶囊，验证注入 + 窗口 + 动画都通
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         DIPShow(@"灵动岛通知胶囊", @"已注入 SpringBoard ✅", YES);
     });
 
-    // 类可能晚于 dylib 出现，前 18 秒内反复尝试扫钩子
-    for (int i = 0; i < 6; i++) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((3.0 + i * 3.0) * NSEC_PER_SEC)),
+    for (int i = 0; i < 5; i++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((2.0 + i * 2.0) * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            DIPScanAndHook();
+            DIPInstallHook();
         });
     }
 }
