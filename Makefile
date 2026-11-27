@@ -12,3 +12,11 @@ DynamicIslandPro_FRAMEWORKS = UIKit Foundation QuartzCore
 DynamicIslandPro_CFLAGS = -fobjc-arc
 
 include $(THEOS_MAKE_PATH)/tweak.mk
+
+BUNDLE_NAME = DynamicIslandProPrefs
+DynamicIslandProPrefs_FILES = Prefs.xm
+DynamicIslandProPrefs_INSTALL_PATH = /Library/PreferenceBundles
+DynamicIslandProPrefs_FRAMEWORKS = UIKit Foundation
+DynamicIslandProPrefs_CFLAGS = -fobjc-arc
+
+include $(THEOS_MAKE_PATH)/bundle.mk
