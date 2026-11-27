@@ -691,7 +691,7 @@ static void DIPHookSpecifiers(Class c) {
 }
 
 static void DIPInstallSettingsHooks(void) {
-    NSArray *exact = @[@"PrefsListController", @"PSListController"];
+    NSArray *exact = @[@"PrefsListController", @"PSUIPrefsListController", @"PSListController"];
     for (NSString *cn in exact) {
         Class c = objc_getClass(cn.UTF8String);
         if (!c) { DIPLog(@"waiting for class %@", cn); continue; }
@@ -710,6 +710,41 @@ static void DIPInstallSettingsHooks(void) {
         }
     }
     free(list);
+}
+
+static BOOL gKickReloaded = NO;
+
+static void DIPKickReload(void) {
+    if (gKickReloaded) return;
+    @try {
+        UIWindow *key = nil;
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if (w.isKeyWindow) { key = w; break; }
+        }
+        if (!key) return;
+        NSMutableArray *q = [NSMutableArray array];
+        if ([key rootViewController]) [q addObject:[key rootViewController]];
+        while (q.count) {
+            id vc = [q objectAtIndex:0];
+            [q removeObjectAtIndex:0];
+            NSString *cn = NSStringFromClass([vc class]);
+            if ([cn isEqualToString:@"PSUIPrefsListController"] || [cn isEqualToString:@"PrefsListController"]) {
+                SEL rs = NSSelectorFromString(@"reloadSpecifiers");
+                if ([vc respondsToSelector:rs]) {
+                    ((void (*)(id, SEL))objc_msgSend)(vc, rs);
+                    gKickReloaded = YES;
+                    DIPLog(@"reload sent to %@", cn);
+                }
+                return;
+            }
+            id kids = nil;
+            @try { kids = [vc valueForKey:@"viewControllers"]; } @catch (NSException *e) {}
+            if (!kids) { @try { kids = [vc valueForKey:@"childViewControllers"]; } @catch (NSException *e) {} }
+            for (id k in kids) [q addObject:k];
+        }
+    } @catch (NSException *e) {
+        DIPLog(@"kick exception: %@", [e reason]);
+    }
 }
 
 static void DIPProbeRoot(void) {
@@ -805,7 +840,7 @@ static BOOL DIPInstallHook(void) {
 
 %ctor {
     NSString *proc = [[NSProcessInfo processInfo] processName];
-    DIPLog(@"=== dylib loaded v22 (%@) pid=%d ===", proc, getpid());
+    DIPLog(@"=== dylib loaded v23 (%@) pid=%d ===", proc, getpid());
 
     if (![proc isEqualToString:@"SpringBoard"]) {
         DIPInstallSettingsHooks();
@@ -815,6 +850,7 @@ static BOOL DIPInstallHook(void) {
                 DIPInstallSettingsHooks();
                 if (i == 3) DIPDumpClasses();
                 if (i == 4) DIPProbeRoot();
+                if (i >= 2) DIPKickReload();
             });
         }
         return;
@@ -829,7 +865,7 @@ static BOOL DIPInstallHook(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (DIPPrefBool(@"enabled", YES))
-            DIPShow(@"灵动岛通知胶囊", @"v22 已注入 SpringBoard ✅", @"com.tencent.xin", YES);
+            DIPShow(@"灵动岛通知胶囊", @"v23 已注入 SpringBoard ✅", @"com.tencent.xin", YES);
     });
 
     for (int i = 0; i < 5; i++) {
