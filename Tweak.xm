@@ -639,7 +639,14 @@ static id DIPInjectIfNeeded(id self, id arr, NSString *hookedClass) {
 
         id link = DIPMakeSpecifier(@"灵动岛通知胶囊", 13);
         if (!link) { DIPLog(@"inject: cannot build specifier"); return arr; }
-        [link setProperty:@"DynamicIslandProPrefs" forKey:@"bundle"];
+        Class detail = objc_getClass("DIPRootController");
+        if (detail) {
+            [link setProperty:(id)detail forKey:@"detail"];
+            DIPLog(@"detail class bound: %@", NSStringFromClass(detail));
+        } else {
+            [link setProperty:@"DynamicIslandProPrefs" forKey:@"bundle"];
+            DIPLog(@"fallback to bundle property");
+        }
 
         id group = DIPMakeSpecifier(@"", 0);
         NSMutableArray *m = [arr isKindOfClass:[NSMutableArray class]] ? (NSMutableArray *)arr : [arr mutableCopy];
@@ -840,7 +847,7 @@ static BOOL DIPInstallHook(void) {
 
 %ctor {
     NSString *proc = [[NSProcessInfo processInfo] processName];
-    DIPLog(@"=== dylib loaded v23 (%@) pid=%d ===", proc, getpid());
+    DIPLog(@"=== dylib loaded v24 (%@) pid=%d ===", proc, getpid());
 
     if (![proc isEqualToString:@"SpringBoard"]) {
         DIPInstallSettingsHooks();
@@ -853,6 +860,21 @@ static BOOL DIPInstallHook(void) {
                 if (i >= 2) DIPKickReload();
             });
         }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            Class c = objc_getClass("DIPRootController");
+            if (!c) { DIPLog(@"selfcheck: DIPRootController 不在本进程"); return; }
+            @try {
+                id vc = [[c alloc] init];
+                ((void (*)(id, SEL))objc_msgSend)(vc, NSSelectorFromString(@"loadViewIfNeeded"));
+                id v = [vc valueForKey:@"view"];
+                DIPLog(@"selfcheck: DIPRootController ok, view=%@", NSStringFromClass([v class]));
+                ((void (*)(id, SEL))objc_msgSend)(vc, NSSelectorFromString(@"viewDidLoad"));
+                DIPLog(@"selfcheck: viewDidLoad ok");
+            } @catch (NSException *e) {
+                DIPLog(@"selfcheck exception: %@", e.reason);
+            }
+        });
         return;
     }
 
@@ -865,7 +887,7 @@ static BOOL DIPInstallHook(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (DIPPrefBool(@"enabled", YES))
-            DIPShow(@"灵动岛通知胶囊", @"v23 已注入 SpringBoard ✅", @"com.tencent.xin", YES);
+            DIPShow(@"灵动岛通知胶囊", @"v24 已注入 SpringBoard ✅", @"com.tencent.xin", YES);
     });
 
     for (int i = 0; i < 5; i++) {

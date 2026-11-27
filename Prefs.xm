@@ -199,6 +199,29 @@ static UIImage *DIPPreviewImage(NSInteger style) {
 
 @implementation DIPRootController
 
+// 兼容 Settings 可能调用的私有协议方法，避免 unrecognized selector 崩溃
+- (void)setSpecifier:(id)specifier {}
+- (id)specifier { return nil; }
+- (void)setParentController:(id)parent {}
+- (id)parentController { return nil; }
+- (void)setRootController:(id)root {}
+- (id)rootController { return nil; }
+- (void)setPreferenceValue:(id)value specifier:(id)specifier {}
+- (id)readPreferenceValue:(id)specifier { return nil; }
+- (void)reloadSpecifiers {}
+- (id)loadSpecifiersFromPlistName:(id)name target:(id)target { return @[]; }
+
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)aSelector {
+    NSMethodSignature *sig = [super methodSignatureForSelector:aSelector];
+    if (sig) return sig;
+    return [NSObject instanceMethodSignatureForSelector:@selector(description)];
+}
+
+- (void)forwardInvocation:(NSInvocation *)invocation {
+    // 未知的私有方法一律忽略
+    NSLog(@"[DIP] ignored selector %@", NSStringFromSelector([invocation selector]));
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"灵动岛通知胶囊";

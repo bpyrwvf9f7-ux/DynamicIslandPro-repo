@@ -7,7 +7,7 @@ INSTALL_TARGET_PROCESSES = SpringBoard
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = DynamicIslandPro
-DynamicIslandPro_FILES = Tweak.xm
+DynamicIslandPro_FILES = Tweak.xm Prefs.xm
 DynamicIslandPro_FRAMEWORKS = UIKit Foundation QuartzCore
 DynamicIslandPro_CFLAGS = -fobjc-arc
 
