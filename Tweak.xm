@@ -242,7 +242,7 @@ static BOOL DIPInstallHook(void) {
 
     DIPLog(@"installing hook, argc=%d", (int)method_getNumberOfArguments(m));
     gOrigPresent = method_getImplementation(m);
-    method_setImplementation(m, (IMP)DIPPresentReplacement);                        
+    method_setImplementation(m, (IMP)DIPPresentReplacement);
     gHookInstalled = YES;
     DIPLog(@"HOOKED -_presentNotificationViewController:modal:forRequest:completion:");
     return YES;
